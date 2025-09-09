@@ -82,7 +82,7 @@ curl -X POST http://localhost:8000/simulate \
      -H "Content-Type: application/json" \
      -d '{"rounds":5,"num_decks":6,"base_bet":10,"strategy":"basic","seed":42, "bet_mode": "fixed"}'
 ```
-
+## Para Windows
 ```Powershell
 $headers = @{ "Content-Type" = "application/json" }
 $body = '{
