@@ -1,55 +1,57 @@
-# Blackjack API
+# API de Blackjack
 
-This repository merges the logic for simulating Blackjack hands with a
-FastAPI application.  Unlike the original separation of an API and a
-separate simulation package, all the game rules, strategies, and API
-definitions live together here in a compact and maintainable structure.
+Este repositorio unifica la lógica para simular manos de Blackjack con una
+aplicación FastAPI. A diferencia de la separación original entre una API y un
+paquete de simulación independiente, aquí todas las reglas del juego,
+estrategias y definiciones de la API viven juntas en una estructura compacta y
+mantenible.
 
-## Features
+## Características
 
-- **Suitless cards:** Each card is represented only by its rank (e.g. `"K"`),
-  while the shoe maintains the correct probability distribution by storing
-  four copies of each rank per deck.
-- **Hi‑Lo counting:** The running Hi‑Lo count and true count are updated
-  after each round.  Bets for the next round depend on the true count from
-  the previous round.
-- **Splitting and doubling:** The simulation supports basic actions
-  including splitting pairs and doubling down.
-- **Multiple strategies:** A few example strategies are provided (simplest,
-  random, basic), and more can be added easily in `strategies.py`.
-- **Single API entrypoint:** Exposes a POST endpoint to simulate a number of
-  rounds and return the resulting hand data.
+- **Cartas sin palos:** Cada carta está representada solo por su rango (ej. `"K"`),
+  mientras que el shoe mantiene la distribución correcta de probabilidades
+  almacenando cuatro copias de cada rango por mazo.
+- **Conteo Hi-Lo:** El conteo acumulado Hi-Lo y el conteo verdadero se actualizan
+  después de cada ronda. Las apuestas de la siguiente ronda dependen del conteo
+  verdadero de la ronda anterior.
+- **División y doblaje:** La simulación soporta acciones básicas como dividir
+  pares y doblar.
+- **Múltiples estrategias:** Se incluyen algunas estrategias de ejemplo
+  (simplest, random, basic), y se pueden agregar más fácilmente en
+  `strategies.py`.
+- **Un solo punto de entrada de API:** Expone un endpoint POST para simular un
+  número de rondas y devolver los datos resultantes de las manos.
 
-## Running
+## Ejecución
 
-To install dependencies and run the API locally:
+Para instalar las dependencias y correr la API localmente:
 
 ```bash
 pip install -r requirements.txt
 
-# Start the server
+# Iniciar el servidor
 uvicorn app:app --reload
 
-# Check it is running
+# Verificar que está corriendo
 curl http://localhost:8000/health
 ```
 
-## Usage
+## Uso
 
-The API exposes the following endpoints:
+La API expone los siguientes endpoints:
 
 ### `GET /health`
 
-Simple health check returning `{ "status": "ok" }`.
+Chequeo de salud simple que devuelve `{ "status": "ok" }`.
 
 ### `GET /strategies`
 
-Returns a list of available strategy names.  Use one of these names as
-the `strategy` field in simulation requests.
+Devuelve una lista con los nombres de las estrategias disponibles. Usá uno de
+estos nombres como valor del campo `strategy` en las requests de simulación.
 
 ### `POST /simulate`
 
-Request body (JSON):
+Cuerpo de la request (JSON):
 
 ```json
 {
@@ -62,18 +64,18 @@ Request body (JSON):
 }
 ```
 
-Fields:
+Campos:
 
-- `rounds` (int): number of rounds to play (≥1).
-- `num_decks` (int): number of decks in the shoe (between 1 and 8).
-- `base_bet` (float): base bet amount (must be >0).
-- `strategy` (str): name of the strategy (see `/strategies`).
-- `seed` (optional int): random seed for deterministic runs.
+- `rounds` (int): número de rondas a jugar (≥1).
+- `num_decks` (int): número de mazos en el shoe (entre 1 y 8).
+- `base_bet` (float): monto de la apuesta base (debe ser >0).
+- `strategy` (str): nombre de la estrategia (ver `/strategies`).
+- `seed` (opcional int): semilla aleatoria para corridas determinísticas.
 - `bet_mode`: modo en la que se apuesta. "fixed" la apuesta no cambia, "Hi-Lo" la apuesta aumenta segun la true count
 
-Response: an array of objects, each representing a player hand.  See
-`schemas.py` for field descriptions, including the Hi‑Lo counts and
-indicators for blackjack or busts.
+Respuesta: un arreglo de objetos, cada uno representando una mano del jugador.
+Ver `schemas.py` para la descripción de campos, incluyendo los conteos Hi-Lo e
+indicadores de blackjack o bust.
 
 ```bash
 curl -X POST http://localhost:8000/simulate \
@@ -97,9 +99,8 @@ Invoke-WebRequest -Uri "http://localhost:8000/simulate" -Method POST -Headers $h
 
 Recomiendo usar Postman para probar los endpoints.
 
-## Modifying
+## Modificación
 
-To add a new strategy, implement a function in `strategies.py` with
-signature `(hand: HandState, dealer_up: str) -> str` and add it to the
-`STRATEGIES` dictionary.  To modify the betting scheme or counting system,
-edit the corresponding functions in `game.py`.
+Para agregar una nueva estrategia, implementá una función en `strategies.py` con la firma `(hand: HandState, dealer_up: str) -> str`
+y agregala al diccionario `STRATEGIES`. Para modificar el esquema de apuestas o el sistema de
+conteo, editá las funciones correspondientes en `game.py`.
