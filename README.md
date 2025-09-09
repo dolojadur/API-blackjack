@@ -1,4 +1,4 @@
-# Blackjack API (Unified)
+# Blackjack API
 
 This repository merges the logic for simulating Blackjack hands with a
 FastAPI application.  Unlike the original separation of an API and a
