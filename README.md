@@ -1,163 +1,105 @@
-# 🎰 API Blackjack
+# Blackjack API (Unified)
 
-API en **FastAPI** que simula jugadas de blackjack usando las **estrategias** del repo externo y expone un endpoint para que otras apps (p. ej. **Airflow**) consuman los datos.
+This repository merges the logic for simulating Blackjack hands with a
+FastAPI application.  Unlike the original separation of an API and a
+separate simulation package, all the game rules, strategies, and API
+definitions live together here in a compact and maintainable structure.
 
----
+## Features
 
-## 📦 Prerrequisitos
+- **Suitless cards:** Each card is represented only by its rank (e.g. `"K"`),
+  while the shoe maintains the correct probability distribution by storing
+  four copies of each rank per deck.
+- **Hi‑Lo counting:** The running Hi‑Lo count and true count are updated
+  after each round.  Bets for the next round depend on the true count from
+  the previous round.
+- **Splitting and doubling:** The simulation supports basic actions
+  including splitting pairs and doubling down.
+- **Multiple strategies:** A few example strategies are provided (simplest,
+  random, basic), and more can be added easily in `strategies.py`.
+- **Single API entrypoint:** Exposes a POST endpoint to simulate a number of
+  rounds and return the resulting hand data.
 
-* **Python 3.10+** (recomendado **3.11**)
-* Repo de estrategias (con `blackjack.py` y `Simulate_premade_strategy.py`) en **otra carpeta**
-  → [BlackJack\_strategies\_simulation](https://github.com/jlev21/BlackJack_strategies_simulation)
+## Running
 
----
-
-## ⚙️ Configuración de entorno
-
-1. Crear archivo `.env` dentro de `api/` con la **ruta local** del repo de estrategias:
-
-```ini
-# api/.env
-# Ejemplo Windows:
-BLACKJACK_REPO_DIR=C:\Users\tu_usuario\Documents\BlackJack_strategies_simulation
-
-# Ejemplo Linux/Mac:
-# BLACKJACK_REPO_DIR=/home/tu_usuario/BlackJack_strategies_simulation
-```
-
-> La API **no** lee variables del sistema: usa este `.env`.
-
----
-
-## 🧩 Instalación
+To install dependencies and run the API locally:
 
 ```bash
-cd api
-python -m venv .venv
-
-# Windows PowerShell
-.\.venv\Scripts\Activate.ps1
-
-# Linux/Mac
-# source .venv/bin/activate
-
 pip install -r requirements.txt
+
+# Start the server
+uvicorn app:app --reload
+
+# Check it is running
+curl http://localhost:8000/health
 ```
 
-> Si tu repo de estrategias requiere librerías adicionales y aparece un error tipo
-> `ModuleNotFoundError: No module named 'matplotlib'`, instalá:
->
-> ```bash
-> pip install numpy matplotlib
-> ```
+## Usage
 
----
-
-## ▶️ Correr la API
-
-```bash
-# desde la carpeta: API-blackjack/api
-uvicorn main:app --reload --port 8000
-```
-
-* Docs interactivas: `http://127.0.0.1:8000/docs`
-* Healthcheck: `http://127.0.0.1:8000/health`
-
----
-
-## 🔌 Endpoints
+The API exposes the following endpoints:
 
 ### `GET /health`
 
-Verifica que el servicio esté vivo.
+Simple health check returning `{ "status": "ok" }`.
 
-```json
-{ "status": "ok" }
-```
+### `GET /strategies`
 
-### `GET /jugadas`
+Returns a list of available strategy names.  Use one of these names as
+the `strategy` field in simulation requests.
 
-Genera (o lee) jugadas para un **match** y devuelve la lista.
+### `POST /simulate`
 
-**Query params:**
-
-* `match_id` *(string)*: identificador del partido.
-* `autogenerar` *(true/false)*: si no existe el match, lo crea y simula.
-* `n_manos` *(int)*: cantidad de jugadas a generar si `autogenerar=true` (por defecto 50).
-* `limit` *(int)*: tope de filas a devolver (por defecto 500).
-* `desde_id` *(int)*: paginado (devuelve jugadas con `id > desde_id`).
-* `num_decks` *(int)*: cantidad de mazos para el simulador (por defecto 6).
-* `apuesta` *(float)*: apuesta base por mano (por defecto 50.0).
-
-**Respuesta (por ítem):**
+Request body (JSON):
 
 ```json
 {
-  "match_id": "run-20250830",
-  "strategy": "basic_strategy",
-  "dealer_card": "Queen of Hearts",
-  "player_card": "Ace of Clubs",
-  "doubled": false,
-  "won": true,
-  "profit": 75.0
+  "rounds": 100,
+  "num_decks": 6,
+  "base_bet": 10,
+  "strategy": "basic",
+  "seed": 42,
+  "bet_mode:" "fixed"
 }
 ```
 
-**Ejemplo:**
+Fields:
+
+- `rounds` (int): number of rounds to play (≥1).
+- `num_decks` (int): number of decks in the shoe (between 1 and 8).
+- `base_bet` (float): base bet amount (must be >0).
+- `strategy` (str): name of the strategy (see `/strategies`).
+- `seed` (optional int): random seed for deterministic runs.
+- `bet_mode`: modo en la que se apuesta. "fixed" la apuesta no cambia, "Hi-Lo" la apuesta aumenta segun la true count
+
+Response: an array of objects, each representing a player hand.  See
+`schemas.py` for field descriptions, including the Hi‑Lo counts and
+indicators for blackjack or busts.
 
 ```bash
-curl "http://127.0.0.1:8000/jugadas?match_id=demo-001&autogenerar=true&n_manos=25&limit=1000"
+curl -X POST http://localhost:8000/simulate \
+     -H "Content-Type: application/json" \
+     -d '{"rounds":5,"num_decks":6,"base_bet":10,"strategy":"basic","seed":42, "bet_mode": "fixed"}'
 ```
 
-> La **estrategia** se elige **al azar** cuando se crea un `match_id` nuevo y queda fija para ese partido.
+```Powershell
+$headers = @{ "Content-Type" = "application/json" }
+$body = '{
+  "rounds": 5,
+  "num_decks": 6,
+  "base_bet": 10,
+  "strategy": "basic",
+  "seed": 42,
+  "bet_mode": "fixed"
+}'
 
----
-
-## 🗂️ Estructura del proyecto
-
-```
-API-blackjack/
-└─ api/
-   ├─ .env                 # ruta local al repo de estrategias
-   ├─ config.py            # lector de .env (sin usar OS env)
-   ├─ database.py          # engine y session (SQLite por defecto)
-   ├─ main.py              # FastAPI + endpoints
-   ├─ models.py            # SQLAlchemy (Match, Play)
-   ├─ schemas.py           # Pydantic (respuesta)
-   ├─ requirements.txt     # dependencias
-   └─ README.md            # este archivo
+Invoke-WebRequest -Uri "http://localhost:8000/simulate" -Method POST -Headers $headers -Body $body
 ```
 
----
+Recomiendo usar Postman para probar los endpoints.
 
-## 🤝 Uso con Airflow (opcional, dev local con Astro)
+## Modifying
 
-1. API arriba (`uvicorn ...`).
-2. `astro dev start`.
-3. En Airflow **Admin → Connections** crear `blackjack_api`:
-
-   * Type: **HTTP**
-   * Host: `host.docker.internal`
-   * Schema: `http`
-   * Port: `8000`
-4. Ejecutar el DAG (por ejemplo `blackjack_pipeline`).
-
-Archivos generados por el DAG:
-
-```
-include/exports/blackjack/<run_id>_jugadas.json
-include/exports/blackjack/<run_id>_jugadas.csv
-```
-
----
-
-## 🆘 Troubleshooting
-
-* **`ModuleNotFoundError: matplotlib`**
-  `pip install numpy matplotlib`
-
-* **La API no arranca y menciona BLACKJACK\_REPO\_DIR**
-  Revisá `api/.env` y que la ruta apunte al folder donde está `blackjack.py`.
-
-* **Desde Airflow no llega a la API**
-  Verificá la conexión `blackjack_api` y que la API esté en `http://127.0.0.1:8000`. En contenedores, el host se referencia como `http://host.docker.internal:8000`.
+To add a new strategy, implement a function in `strategies.py` with
+signature `(hand: HandState, dealer_up: str) -> str` and add it to the
+`STRATEGIES` dictionary.  To modify the betting scheme or counting system,
+edit the corresponding functions in `game.py`.
