@@ -14,8 +14,9 @@ count used to adjust bets for subsequent rounds.
 """
 
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 import random
+
 
 
 # ----- Card definitions -----
@@ -192,210 +193,183 @@ def _bet_from_true_count(tc: float, base: float = 10.0, max_mult: int = 5) -> fl
         mult = max_mult
     return float(base * mult)
 
+def legal_actions(hand: HandState) -> List[str]:
+    acts = ["stand", "hit"]
+    if hand.can_double():
+        acts.append("double")
+    # Si querés incluir split en esta v1, descomentá:
+    # if hand.can_split():
+    #     acts.append("split")
+    return acts
+
+def clone_shoe(src: Shoe) -> Shoe:
+    """Clona el shoe actual (mismo contenido de cartas)."""
+    dst = Shoe(num_decks=src.num_decks)     # crea base
+    dst._shoe = list(src._shoe)             # copia estado
+    dst._cards_total = src._cards_total
+    # RNG distinto por rama = orden distinto de draws (bien para Monte Carlo)
+    dst._rng = random.Random()              # si querés reproducibilidad, seteá una seed externa
+    return dst
+
+def apply_action_once(hand: HandState, action: str, shoe: Shoe) -> Tuple[HandState, bool]:
+    """
+    Aplica UNA acción del jugador sobre una copia de la mano y devuelve:
+    - (nueva_mano, terminal_del_turno_del_jugador)
+    """
+    h = HandState(cards=list(hand.cards), bet=hand.bet, actions=list(hand.actions), doubled=hand.doubled)
+
+    if action == "hit":
+        h.cards.append(shoe.pop())
+        h.actions.append("hit")
+        # si bust, el turno del jugador terminó
+        return h, (h.value > 21)
+
+    if action == "double" and h.can_double():
+        h.bet *= 2.0
+        h.doubled = True
+        h.actions.append("double")
+        h.cards.append(shoe.pop())
+        h.actions.append("stand")
+        return h, True  # double cierra el turno
+
+    # "stand" o acción ilegal => stand
+    h.actions.append("stand")
+    return h, True
+
+def dfs_play_all_paths(
+    init_player: List[str],
+    init_dealer: List[str],
+    shoe_for_node: Shoe,
+    base_bet: float,
+    round_id: int,
+    true_count_prev_round: float,
+    bet_mode: str,
+    results_acc: List[RoundResult],
+):
+    """
+    Explora en profundidad TODAS las ramas desde la mano inicial.
+    En cada nodo: toma acciones LEGALES, baraja su orden al azar y recurre.
+    Cuando el jugador termina (stand/double/bust), juega dealer y registra 1 fila.
+    """
+
+    # Estado raíz
+    root_player = HandState(cards=list(init_player), bet=base_bet, actions=[])
+    root_dealer = HandState(cards=list(init_dealer), bet=0.0, actions=[])
+
+    def _dealer_phase_and_emit(player: HandState, dealer: HandState, shoe: Shoe):
+        # Dealer juega
+        _dealer_play(dealer, shoe)
+        # Resultado
+        outcome = _settle(player.value, dealer.value)
+        final_result = "push" if outcome == 0 else ("win" if outcome > 0 else "lose")
+        busted = player.value > 21
+        blackjack = player.is_blackjack()
+
+        # Conteo Hi-Lo local de esta rama (cartas vistas)
+        seen = player.cards + dealer.cards
+        local_rc = sum(hi_lo_value(r) for r in seen)
+        local_tc = local_rc / max(0.0001, 52.0 * shoe.num_decks)  # aprox. TC local por rama
+
+        results_acc.append(
+            RoundResult(
+                round_id=round_id,
+                hand_number=1,
+                player_cards=list(player.cards),
+                dealer_cards=list(dealer.cards),
+                actions=list(player.actions),
+                bet_amount=player.bet,
+                final_result=final_result,
+                blackjack=blackjack,
+                busted=busted,
+                strategy_used="random-dfs",
+                bet_mode=bet_mode,
+                true_count_prev_round=round(true_count_prev_round, 3),
+                running_count_end=round(local_rc, 3),
+                true_count_end=round(local_tc, 3),
+                cards_remaining=shoe_for_node.cards_remaining(),   # informativo
+                decks_remaining=round(shoe_for_node.decks_remaining(), 3),
+            )
+        )
+
+    def _dfs(player: HandState, dealer: HandState, shoe: Shoe):
+        # Si ya bust, termina rama y emite
+        if player.value > 21:
+            _dealer_phase_and_emit(player, dealer, shoe)
+            return
+
+        # Acciones legales del nodo actual (orden aleatorio)
+        acts = legal_actions(player)
+        random.shuffle(acts)
+
+        for act in acts:
+            # Clonar estado para la rama
+            p = HandState(cards=list(player.cards), bet=player.bet, actions=list(player.actions), doubled=player.doubled)
+            d = HandState(cards=list(dealer.cards), bet=dealer.bet, actions=list(dealer.actions), doubled=dealer.doubled if hasattr(dealer,'doubled') else False)
+            sh = clone_shoe(shoe)
+
+            # Aplicar acción una vez
+            p, player_turn_done = apply_action_once(p, act, sh)
+
+            if player_turn_done:
+                # emite fila terminal (dealer juega adentro)
+                _dealer_phase_and_emit(p, d, sh)
+            else:
+                # seguir profundizando (más hits posibles)
+                _dfs(p, d, sh)
+
+    # arrancar DFS desde la raíz
+    _dfs(root_player, root_dealer, clone_shoe(shoe_for_node))
 
 def simulate_rounds(
     rounds: int,
     num_decks: int,
     base_bet: float,
-    strategy_name: str,
-    strategy_fn: StrategyFn,
-    bet_mode: str,
+    strategy_name: str,      # se conserva por compatibilidad (no se usa)
+    strategy_fn: StrategyFn, # se conserva por compatibilidad (no se usa)
     seed: Optional[int] = None,
+    bet_mode: str = "fixed", # "fixed" | "hi-lo"
 ) -> List[RoundResult]:
-    """
-    Simulate a sequence of Blackjack rounds.
 
-    Each round updates the Hi‑Lo running and true counts after all hands are
-    completed.  Bets for a round are determined by the true count at the end
-    of the previous round.  Returns a list of RoundResult instances, one
-    per player hand (including hands from splits).
-    """
     rng = random.Random(seed)
-    shoe = Shoe(num_decks=num_decks, shuffle_seed=seed)
-    running_count = 0.0
-    total_cards_initial = shoe.cards_remaining()
-    true_count_prev = 0.0
+    # Shoe solo para REPARTIR la mano inicial de cada round
+    deal_shoe = Shoe(num_decks=num_decks, shuffle_seed=seed)
+    cards_total = deal_shoe.cards_remaining()
     results: List[RoundResult] = []
+    running_count_prev = 0.0
+    true_count_prev = 0.0
 
     for round_id in range(1, rounds + 1):
-        # shuffle when the shoe is nearly depleted
-        if shoe.cards_remaining() <= 0.25 * total_cards_initial:
-            shoe.reshuffle()
-            running_count = 0.0
-            total_cards_initial = shoe.cards_remaining()
+        # reshuffle al iniciar round si quedó <25%
+        if deal_shoe.cards_remaining() <= 0.25 * cards_total:
+            deal_shoe.reshuffle()
+            running_count_prev = 0.0
+            cards_total = deal_shoe.cards_remaining()
             true_count_prev = 0.0
 
-        if bet_mode == "fixed":
-            bet_amount = float(base_bet)
+        # apuesta base según bet_mode
+        if bet_mode == "hi-lo":
+            bet_base = _bet_from_true_count(true_count_prev, base=base_bet)
         else:
-            bet_amount = _bet_from_true_count(true_count_prev, base=base_bet)
+            bet_base = float(base_bet)
 
-        # Deal initial cards
-        player = HandState(cards=[shoe.pop(), shoe.pop()], bet=bet_amount, actions=[])
-        dealer = HandState(cards=[shoe.pop(), shoe.pop()], bet=0.0, actions=[])
+        # repartir mano inicial (jugador/dealer)
+        init_player = [deal_shoe.pop(), deal_shoe.pop()]
+        init_dealer = [deal_shoe.pop(), deal_shoe.pop()]
 
-        seen_this_round: List[str] = list(player.cards) + list(dealer.cards)
+        # DFS: explora TODAS las ramas, eligiendo orden aleatorio en cada nodo
+        dfs_play_all_paths(
+            init_player=init_player,
+            init_dealer=init_dealer,
+            shoe_for_node=deal_shoe,                 # sólo para referenciar decks_remaining/cards_remaining
+            base_bet=bet_base,
+            round_id=round_id,
+            true_count_prev_round=true_count_prev,
+            bet_mode=bet_mode,
+            results_acc=results,
+        )
 
-        # Immediate blackjack check
-        if dealer.is_blackjack():
-            # Dealer has blackjack; player pushes if also blackjack otherwise loses
-            final = "push" if player.is_blackjack() else "lose"
-            res = RoundResult(
-                round_id=round_id,
-                hand_number=1,
-                player_cards=list(player.cards),
-                dealer_cards=list(dealer.cards),
-                actions=[],
-                bet_amount=player.bet,
-                final_result=final,
-                blackjack=player.is_blackjack(),
-                busted=False,
-                strategy_used=strategy_name,
-                bet_mode=bet_mode,
-                true_count_prev_round=round(true_count_prev, 3),
-                running_count_end=0.0,
-                true_count_end=0.0,
-                cards_remaining=0,
-                decks_remaining=0.0,
-            )
-            # Update counts
-            delta = sum(hi_lo_value(r) for r in seen_this_round)
-            running_count += delta
-            true_count_end = running_count / shoe.decks_remaining()
-            res.running_count_end = round(running_count, 3)
-            res.true_count_end = round(true_count_end, 3)
-            res.cards_remaining = shoe.cards_remaining()
-            res.decks_remaining = round(shoe.decks_remaining(), 3)
-            results.append(res)
-            true_count_prev = true_count_end
-            continue
-
-        if player.is_blackjack():
-            # Player has blackjack and dealer doesn't
-            res = RoundResult(
-                round_id=round_id,
-                hand_number=1,
-                player_cards=list(player.cards),
-                dealer_cards=list(dealer.cards),
-                actions=["stand"],
-                bet_amount=player.bet,
-                final_result="win",
-                blackjack=True,
-                busted=False,
-                strategy_used=strategy_name,
-                bet_mode=bet_mode,
-                true_count_prev_round=round(true_count_prev, 3),
-                running_count_end=0.0,
-                true_count_end=0.0,
-                cards_remaining=0,
-                decks_remaining=0.0,
-            )
-            delta = sum(hi_lo_value(r) for r in seen_this_round)
-            running_count += delta
-            true_count_end = running_count / shoe.decks_remaining()
-            res.running_count_end = round(running_count, 3)
-            res.true_count_end = round(true_count_end, 3)
-            res.cards_remaining = shoe.cards_remaining()
-            res.decks_remaining = round(shoe.decks_remaining(), 3)
-            results.append(res)
-            true_count_prev = true_count_end
-            continue
-
-        # Player decisions (including splits)
-        hands: List[HandState] = [player]
-        hand_index = 0
-        while hand_index < len(hands):
-            current = hands[hand_index]
-            while True:
-                action = strategy_fn(current, dealer.cards[0])
-                if action == "hit" or (action == "double" and not current.can_double()):
-                    current.cards.append(shoe.pop())
-                    current.actions.append("hit")
-                    seen_this_round.append(current.cards[-1])
-                    if current.value > 21:
-                        break
-                elif action == "stand":
-                    current.actions.append("stand")
-                    break
-                elif action == "double" and current.can_double():
-                    current.bet *= 2.0
-                    current.doubled = True
-                    current.actions.append("double")
-                    current.cards.append(shoe.pop())
-                    seen_this_round.append(current.cards[-1])
-                    current.actions.append("stand")
-                    break
-                #cambiar logica para resolver cuando no se puede split
-                elif action == "split" and current.can_split():
-                    # Remove the current hand and create two new hands from the split
-                    hands.pop(hand_index)
-                    left = HandState(cards=[current.cards[0]], bet=current.bet, actions=["split"])
-                    right = HandState(cards=[current.cards[1]], bet=current.bet, actions=["split"])
-                    # Each new hand gets one additional card
-                    left.cards.append(shoe.pop())
-                    right.cards.append(shoe.pop())
-                    seen_this_round.extend([left.cards[-1], right.cards[-1]])
-                    hands.insert(hand_index, right)
-                    hands.insert(hand_index, left)
-                    hand_index -= 1
-                    break
-                else:
-                    # Unknown or not allowed action → stand
-                    current.actions.append("stand")
-                    break
-            hand_index += 1
-
-        # Dealer plays
-        _dealer_play(dealer, shoe)
-        # Add dealer's additional cards to seen
-        if len(dealer.cards) > 2:
-            seen_this_round.extend(dealer.cards[2:])
-
-        # Settle outcomes for each hand
-        hand_counter = 0
-        for h in hands:
-            hand_counter += 1
-            outcome = _settle(h.value, dealer.value)
-
-            if outcome == 0:
-                result_str = "push" 
-            elif outcome > 0 :
-                result_str = "win"
-            else:
-                result_str = "lose"
-
-            busted = h.value > 21
-            blackjack_flag = h.is_blackjack()
-            res = RoundResult(
-                round_id=round_id,
-                hand_number=hand_counter,
-                player_cards=list(h.cards),
-                dealer_cards=list(dealer.cards),
-                actions=list(h.actions),
-                bet_amount=h.bet,
-                final_result=result_str,
-                blackjack=blackjack_flag,
-                busted=busted,
-                strategy_used=strategy_name,
-                bet_mode=bet_mode,
-                true_count_prev_round=round(true_count_prev, 3),
-                running_count_end=0.0,
-                true_count_end=0.0,
-                cards_remaining=0,
-                decks_remaining=0.0,
-            )
-            results.append(res)
-
-        # Update Hi‑Lo counts
-        delta = sum(hi_lo_value(r) for r in seen_this_round)
-        running_count += delta
-        true_count = running_count / shoe.decks_remaining()
-        # Fill updated counts for all hands of this round
-        for res in results[-len(hands):]:
-            res.running_count_end = round(running_count, 3)
-            res.true_count_end = round(true_count, 3)
-            res.cards_remaining = shoe.cards_remaining()
-            res.decks_remaining = round(shoe.decks_remaining(), 3)
-        true_count_prev = true_count
+        # avanzar el conteo “global” SOLO con el reparto inicial (coherente con tu idea de TC por ronda)
+        running_count_prev += sum(hi_lo_value(r) for r in (init_player + init_dealer))
+        true_count_prev = running_count_prev / deal_shoe.decks_remaining()
 
     return results
